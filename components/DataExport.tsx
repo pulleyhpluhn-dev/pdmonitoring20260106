@@ -4,7 +4,7 @@ import { Project, ConfigDevice, ConfigSensor, AlarmLevel } from '../types';
 import { 
   FileOutput, Calendar, Check, ChevronRight, Search, 
   Database, HardDrive, Radio, Waves, Clock, Download, 
-  Filter, AlertCircle, Info, ChevronDown, ShieldCheck, Activity
+  Filter, AlertCircle, Info, ChevronDown, ShieldCheck, Activity, HardDriveDownload
 } from 'lucide-react';
 
 interface DataExportProps {
@@ -34,6 +34,7 @@ const DataExport: React.FC<DataExportProps> = ({ isDark, projects, devices, sens
   const [timeRange, setTimeRange] = useState({ start: '', end: '' });
   const [isExporting, setIsExporting] = useState(false);
   const [exportProgress, setExportProgress] = useState(0);
+  const [estimatedSize, setEstimatedSize] = useState<string>('0 B');
 
   // 级联选择逻辑：选择项目时自动选择其下所有设备和测点
   const handleProjectToggle = (pid: string) => {
@@ -78,6 +79,75 @@ const DataExport: React.FC<DataExportProps> = ({ isDark, projects, devices, sens
     );
   };
 
+  // 快捷时间段选择
+  const handlePresetTime = (days: number) => {
+      const end = new Date();
+      const start = new Date();
+      if (days === 1) {
+          // 过去24h (今天)
+          // start.setDate(end.getDate() - 1); // 如果定义为昨天到今天，解开此注释
+      } else {
+          start.setDate(end.getDate() - (days - 1));
+      }
+      
+      const formatDate = (d: Date) => {
+          const year = d.getFullYear();
+          const month = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          return `${year}-${month}-${day}`;
+      };
+
+      setTimeRange({
+          start: formatDate(start),
+          end: formatDate(end)
+      });
+  };
+
+  // 计算预估数据量
+  useEffect(() => {
+      if (selectedSensorIds.length === 0 || !timeRange.start || !timeRange.end) {
+          setEstimatedSize('0 B');
+          return;
+      }
+
+      const start = new Date(timeRange.start).getTime();
+      const end = new Date(timeRange.end).getTime();
+      
+      if (isNaN(start) || isNaN(end) || start > end) {
+          setEstimatedSize('0 B');
+          return;
+      }
+
+      // 计算天数 (包含首尾)
+      const diffDays = Math.floor((end - start) / (1000 * 3600 * 24)) + 1;
+      
+      // 假设模型：
+      // 1个测点 1天产生约 2MB 数据 (原始波形+特征值)
+      // 如果只选了特定状态，假设数据分布：正常(90%), 异常(10%)
+      const basePerSensorDay = 2 * 1024 * 1024; // 2MB
+      
+      // 简单的状态比例因子
+      let statusFactor = 0;
+      if (selectedStatuses.includes(AlarmLevel.NORMAL)) statusFactor += 0.9;
+      // 其他所有异常状态加起来算 0.1 (粗略估计)
+      const abnormalStatuses = [AlarmLevel.WARNING, AlarmLevel.DANGER, AlarmLevel.CRITICAL];
+      const hasAbnormal = abnormalStatuses.some(s => selectedStatuses.includes(s));
+      if (hasAbnormal) statusFactor += 0.1;
+      
+      // 修正：如果只选了异常没选正常，且无异常数据，可能为0，这里给个最小值避免显示0
+      statusFactor = Math.max(statusFactor, 0.01); 
+
+      // 总大小 = 测点数 * 天数 * 单日基准 * 状态因子
+      const totalBytes = selectedSensorIds.length * diffDays * basePerSensorDay * statusFactor;
+
+      // 格式化
+      if (totalBytes < 1024) setEstimatedSize(`${totalBytes.toFixed(0)} B`);
+      else if (totalBytes < 1024 * 1024) setEstimatedSize(`${(totalBytes / 1024).toFixed(1)} KB`);
+      else if (totalBytes < 1024 * 1024 * 1024) setEstimatedSize(`${(totalBytes / (1024 * 1024)).toFixed(2)} MB`);
+      else setEstimatedSize(`${(totalBytes / (1024 * 1024 * 1024)).toFixed(2)} GB`);
+
+  }, [selectedSensorIds.length, timeRange, selectedStatuses]);
+
   const triggerExport = () => {
     if (selectedSensorIds.length === 0 || selectedStatuses.length === 0) return;
     setIsExporting(true);
@@ -89,7 +159,7 @@ const DataExport: React.FC<DataExportProps> = ({ isDark, projects, devices, sens
           clearInterval(interval);
           setTimeout(() => {
             setIsExporting(false);
-            alert('导出任务已完成！监测数据包已准备就绪。');
+            alert(`导出任务已完成！\n包含 ${selectedSensorIds.length} 个测点，共 ${estimatedSize} 数据。`);
           }, 500);
           return 100;
         }
@@ -191,7 +261,7 @@ const DataExport: React.FC<DataExportProps> = ({ isDark, projects, devices, sens
         {/* 右侧：筛选参数与时段配置 */}
         <div className="w-1/2 flex flex-col gap-6">
           
-          {/* 修改点：设备状态筛选（替换原有的数据模态） */}
+          {/* 设备状态筛选 */}
           <div className={`p-5 rounded-xl border ${isDark ? 'bg-slate-800/40 border-slate-700' : 'bg-white border-gray-200 shadow-sm'}`}>
             <h3 className="text-xs font-black uppercase tracking-widest mb-4 flex items-center gap-2">
               <ShieldCheck size={16} className="text-blue-500" /> 设备状态筛选
@@ -229,45 +299,66 @@ const DataExport: React.FC<DataExportProps> = ({ isDark, projects, devices, sens
             <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <label className="text-[10px] opacity-40 font-black uppercase tracking-tighter">开始时间</label>
+                  <label className="text-[10px] opacity-40 font-black uppercase tracking-tighter">开始日期</label>
                   <div className="relative">
                     <Calendar size={14} className="absolute left-3 top-3 opacity-30" />
                     <input 
-                      type="datetime-local" 
-                      className={`w-full pl-10 pr-4 py-2 rounded-lg text-xs border outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-white focus:border-blue-500' : 'bg-gray-50 border-gray-300 text-slate-800'}`} 
+                      type="date" 
+                      value={timeRange.start}
+                      className={`w-full pl-10 pr-4 py-2 rounded-lg text-xs border outline-none cursor-pointer ${isDark ? 'bg-slate-900 border-slate-700 text-white focus:border-blue-500' : 'bg-gray-50 border-gray-300 text-slate-800'}`} 
                       onChange={(e) => setTimeRange(prev => ({ ...prev, start: e.target.value }))}
                     />
                   </div>
                 </div>
                 <div className="space-y-1.5">
-                  <label className="text-[10px] opacity-40 font-black uppercase tracking-tighter">结束时间</label>
+                  <label className="text-[10px] opacity-40 font-black uppercase tracking-tighter">结束日期</label>
                   <div className="relative">
                     <Calendar size={14} className="absolute left-3 top-3 opacity-30" />
                     <input 
-                      type="datetime-local" 
-                      className={`w-full pl-10 pr-4 py-2 rounded-lg text-xs border outline-none ${isDark ? 'bg-slate-900 border-slate-700 text-white focus:border-blue-500' : 'bg-gray-50 border-gray-300 text-slate-800'}`} 
+                      type="date" 
+                      value={timeRange.end}
+                      className={`w-full pl-10 pr-4 py-2 rounded-lg text-xs border outline-none cursor-pointer ${isDark ? 'bg-slate-900 border-slate-700 text-white focus:border-blue-500' : 'bg-gray-50 border-gray-300 text-slate-800'}`} 
                       onChange={(e) => setTimeRange(prev => ({ ...prev, end: e.target.value }))}
                     />
                   </div>
                 </div>
               </div>
               <div className="flex gap-2">
-                {['过去24h', '最近7天', '最近30天'].map(btn => (
-                  <button key={btn} className={`px-4 py-1.5 rounded-lg text-[10px] font-bold border transition-colors ${isDark ? 'bg-slate-900 border-slate-700 hover:bg-slate-800 text-slate-400' : 'bg-gray-100 border-gray-200 hover:bg-gray-200 text-slate-600'}`}>
-                    {btn}
+                {[
+                    { label: '过去24h', days: 1 }, 
+                    { label: '最近7天', days: 7 }, 
+                    { label: '最近30天', days: 30 }
+                ].map(btn => (
+                  <button 
+                    key={btn.label} 
+                    onClick={() => handlePresetTime(btn.days)}
+                    className={`px-4 py-1.5 rounded-lg text-[10px] font-bold border transition-colors ${isDark ? 'bg-slate-900 border-slate-700 hover:bg-slate-800 text-slate-400 hover:text-white' : 'bg-gray-100 border-gray-200 hover:bg-gray-200 text-slate-600 hover:text-black'}`}
+                  >
+                    {btn.label}
                   </button>
                 ))}
               </div>
               
+              {/* 数据量统计提示 */}
+              <div className={`mt-4 p-3 rounded-lg flex items-center justify-between border ${isDark ? 'bg-blue-500/10 border-blue-500/20' : 'bg-blue-50 border-blue-100'}`}>
+                  <div className="flex items-center gap-2">
+                      <HardDriveDownload size={14} className="text-blue-500" />
+                      <span className="text-xs font-bold opacity-80">预估数据量</span>
+                  </div>
+                  <span className={`text-sm font-black font-mono ${isDark ? 'text-blue-400' : 'text-blue-600'}`}>
+                      {estimatedSize}
+                  </span>
+              </div>
+
             </div>
           </div>
 
           <button 
             onClick={triggerExport}
-            disabled={isExporting || selectedSensorIds.length === 0 || selectedStatuses.length === 0}
+            disabled={isExporting || selectedSensorIds.length === 0 || selectedStatuses.length === 0 || !timeRange.start || !timeRange.end}
             className={`w-full py-4 rounded-xl font-black text-white flex items-center justify-center gap-3 transition-all relative overflow-hidden shadow-xl
               ${isExporting ? 'bg-slate-700 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 active:scale-[0.98] shadow-blue-500/20'}
-              ${(selectedSensorIds.length === 0 || selectedStatuses.length === 0) ? 'opacity-50 grayscale cursor-not-allowed' : ''}
+              ${(selectedSensorIds.length === 0 || selectedStatuses.length === 0 || !timeRange.start) ? 'opacity-50 grayscale cursor-not-allowed' : ''}
             `}
           >
             {isExporting && (
@@ -275,7 +366,7 @@ const DataExport: React.FC<DataExportProps> = ({ isDark, projects, devices, sens
             )}
             <div className="relative z-10 flex items-center gap-3">
               {isExporting ? <Clock size={20} className="animate-spin" /> : <Download size={20} />}
-              {isExporting ? `正在生成导出包 (${exportProgress}%)` : '数据导出'}
+              {isExporting ? `正在生成导出包 (${exportProgress}%)` : '开始数据导出'}
             </div>
           </button>
         </div>
